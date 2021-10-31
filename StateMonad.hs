@@ -198,10 +198,13 @@ where that leads...
 -}
 
 returnST :: a -> ST a
-returnST = undefined
+returnST a s = (a, s)
 
 bindST :: ST a -> (a -> ST b) -> ST b
-bindST = undefined
+bindST stA f s =
+  let (a', s') = stA s
+      stB = f a'
+   in stB s'
 
 {-
 That is, `returnST` converts a value into a store transformer by simply
@@ -225,10 +228,7 @@ label2 t = fst (aux t 0)
   where
     aux :: Tree a -> ST (Tree (a, Int))
     aux (Leaf x) = \s -> (Leaf (x, s), s + 1)
-    aux (Branch t1 t2) = \s ->
-      let (t1', s') = aux t1 s
-          (t2', s'') = aux t2 s'
-       in (Branch t1' t2', s'')
+    aux (Branch t1 t2) = aux t1 `bindST` (\t1' -> aux t2 `bindST` (returnST . Branch t1'))
 
 {-
 Because the `ST` parameterized has definitions for return and bind, we should
@@ -311,7 +311,7 @@ the next integer as the new state:
 -}
 
 fresh :: ST2 Int
-fresh = undefined
+fresh = S $ \s -> (s, s + 1)
 
 {-
 This function should transform the store as follows: when given an initial
@@ -330,8 +330,21 @@ straightforward to define our tree labeling function.
 -}
 
 mlabel :: Tree a -> ST2 (Tree (a, Int))
-mlabel (Leaf x) = undefined -- use `fresh` here
-mlabel (Branch t1 t2) = undefined
+mlabel (Leaf x) = fresh >>= \y -> return (Leaf (x, y))
+mlabel (Branch t1 t2) =
+  mlabel t1
+    >>= \t1' ->
+      mlabel t2
+        >>= \t2' -> return (Branch t1' t2')
+
+mlabel' :: Tree a -> ST2 (Tree (a, Int))
+mlabel' (Leaf x) = do
+  y <- fresh
+  return (Leaf (x, y))
+mlabel' (Branch t1 t2) = do
+  t1' <- mlabel t1
+  t2' <- mlabel t2
+  return (Branch t1' t2')
 
 {-
 Try to implement `mlabel` both with and without `do`-notation.
@@ -339,6 +352,7 @@ Try to implement `mlabel` both with and without `do`-notation.
 Note that in either version, the programmer does not have to worry about the
 tedious and error-prone task of dealing with the plumbing of fresh labels, as
 this is handled automatically by the state monad.
+TODO: what does the above mean?
 
 Finally, we can now define a function that labels a tree by
 simply applying the resulting store transformer with zero as
@@ -346,7 +360,7 @@ the initial state, and then discarding the final state:
 -}
 
 label :: Tree a -> Tree (a, Int)
-label t = undefined
+label t = fst $ runState (mlabel' t) 0
 
 {-
 For example, `label tree` gives the following result:
@@ -453,7 +467,9 @@ We write an *action* that returns the current index (and increments it). Use
 
 freshM :: S.State (MySt a) Int
 freshM = do
-  undefined
+  m <- S.get
+  S.put (M (index m + 1) (freq m))
+  return $ index m
 
 {-
 Similarly, we want an action that updates the frequency of a given
@@ -461,7 +477,13 @@ element `k`.
 -}
 
 updFreqM :: Ord a => a -> S.State (MySt a) ()
-updFreqM = undefined
+updFreqM a = do
+  m <- S.get
+  S.put (M (index m) (Map.insert a (newValue (freq m)) (freq m)))
+  where
+    newValue d = case Map.lookup a d of
+      Just x -> x + 1
+      Nothing -> 1
 
 {-
 And with these two, we are done
